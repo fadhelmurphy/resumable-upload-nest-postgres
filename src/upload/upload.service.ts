@@ -56,15 +56,12 @@ export class UploadService {
             existingSize = 0;
         }
 
-        // Hanya terima chunk kalau memang sesuai urutan
         const contentLength = +req.headers['content-length'] || 0;
         const expectedEnd = existingSize + contentLength;
 
         if (expectedEnd > totalSize) {
-            // Hitung berapa byte yang boleh diterima
             const allowedSize = totalSize - existingSize;
 
-            // Buat stream manual (tanpa pipe) biar bisa kontrol
             const writeStream = createWriteStream(uploadPath, { flags: 'a' });
             let written = 0;
 
@@ -84,7 +81,6 @@ export class UploadService {
                 writeStream.on('error', reject);
             });
         } else {
-            // Normal append
             const stream = createWriteStream(uploadPath, { flags: 'a' });
             await new Promise<void>((resolve, reject) => {
                 req.pipe(stream);
@@ -140,23 +136,23 @@ export class UploadService {
         return record || { filename, size: 0, status: 'not-started' };
     }
 
-    async computeChecksums(filePath: string): Promise<[string, string]> {
-        return new Promise((resolve, reject) => {
-            const md5 = crypto.createHash('md5');
-            const sha = crypto.createHash('sha256');
-            const stream = fs.createReadStream(filePath);
+    // async computeChecksums(filePath: string): Promise<[string, string]> {
+    //     return new Promise((resolve, reject) => {
+    //         const md5 = crypto.createHash('md5');
+    //         const sha = crypto.createHash('sha256');
+    //         const stream = fs.createReadStream(filePath);
 
-            stream.on('data', chunk => {
-                md5.update(chunk);
-                sha.update(chunk);
-            });
+    //         stream.on('data', chunk => {
+    //             md5.update(chunk);
+    //             sha.update(chunk);
+    //         });
 
-            stream.on('end', () => {
-                resolve([md5.digest('hex'), sha.digest('hex')]);
-            });
+    //         stream.on('end', () => {
+    //             resolve([md5.digest('hex'), sha.digest('hex')]);
+    //         });
 
-            stream.on('error', reject);
-        });
-    }
+    //         stream.on('error', reject);
+    //     });
+    // }
 
 }
