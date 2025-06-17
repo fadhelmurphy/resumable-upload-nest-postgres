@@ -123,7 +123,6 @@ export class UploadService {
             await fs.promises.unlink(filePath);
         } catch (err) {
             console.error(`Failed to delete file ${filePath}:`, err);
-            // Kalau file ga ada, kita anggap sukses delete record
         }
 
         await this.uploadRepo.delete({ filename });

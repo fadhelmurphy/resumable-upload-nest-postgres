@@ -26,7 +26,7 @@ Sebuah project **Resumable File Upload** menggunakan:
 ```
 Frontend JS (Fetch + Progress Bar)
 ↓
-NestJS Server (Upload, Status, Checksum, Abort)
+NestJS Server (Upload, Status, Abort)
 ↓
 Postgres (store file metadata: size, status, hash)
 ↓
