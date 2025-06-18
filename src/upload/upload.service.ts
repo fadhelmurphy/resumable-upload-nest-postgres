@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Upload } from './upload.entity';
 import { LessThan, Repository } from 'typeorm';
@@ -40,79 +40,93 @@ export class UploadService {
 
 
     async handleUpload(
-        req: any,
-        fileName: string,
-        totalSize: number,
-    ): Promise<{ uploaded: number; status: string }> {
-        const uploadDir = path.join(process.cwd(), 'uploads');
-        await fsPromises.mkdir(uploadDir, { recursive: true });
-        const uploadPath = path.join(uploadDir, fileName);
+  req: any,
+  fileName: string,
+  totalSize: number,
+): Promise<{ uploaded: number; status: string }> {
+  const uploadDir = path.join(process.cwd(), 'uploads');
+  await fsPromises.mkdir(uploadDir, { recursive: true });
+  const uploadPath = path.join(uploadDir, fileName);
 
-        let existingSize = 0;
-        try {
-            const stats = await fsPromises.stat(uploadPath);
-            existingSize = stats.size;
-        } catch {
-            existingSize = 0;
+  // Cek file yang sudah ada
+  let existingSize = 0;
+  try {
+    const stats = await fsPromises.stat(uploadPath);
+    existingSize = stats.size;
+  } catch {
+    existingSize = 0;
+  }
+
+  // Validasi offset kalau client kasih Upload-Offset header
+  const clientOffset = parseInt(req.headers['upload-offset'] || '0');
+  if (clientOffset !== existingSize) {
+    throw new HttpException(
+      `Offset mismatch. Server offset: ${existingSize}, client offset: ${clientOffset}`,
+      HttpStatus.CONFLICT,
+    );
+  }
+
+  // Hitung content-length
+  const contentLength = +req.headers['content-length'] || 0;
+  const expectedEnd = existingSize + contentLength;
+
+  if (expectedEnd > totalSize) {
+    const allowedSize = totalSize - existingSize;
+
+    const writeStream = createWriteStream(uploadPath, { flags: 'a' });
+    let written = 0;
+
+    await new Promise<void>((resolve, reject) => {
+      req.on('data', chunk => {
+        if (written < allowedSize) {
+          const toWrite = chunk.slice(0, allowedSize - written);
+          writeStream.write(toWrite);
+          written += toWrite.length;
         }
+      });
+      req.on('end', () => {
+        writeStream.end();
+        resolve();
+      });
+      req.on('error', reject);
+      writeStream.on('error', reject);
+    });
+  } else {
+    const stream = createWriteStream(uploadPath, { flags: 'a' });
+    await new Promise<void>((resolve, reject) => {
+      req.pipe(stream);
+      stream.on('finish', resolve);
+      stream.on('error', reject);
+      req.on('error', reject);
+    });
+  }
 
-        const contentLength = +req.headers['content-length'] || 0;
-        const expectedEnd = existingSize + contentLength;
+  // Setelah write selesai
+  const finalStats = await fsPromises.stat(uploadPath);
+  const finalSize = finalStats.size;
 
-        if (expectedEnd > totalSize) {
-            const allowedSize = totalSize - existingSize;
+  let status = 'in-progress';
+  if (finalSize >= totalSize) {
+    status = 'complete';
+  }
 
-            const writeStream = createWriteStream(uploadPath, { flags: 'a' });
-            let written = 0;
+  // Update repo
+  await this.uploadRepo.upsert(
+    {
+      filename: fileName,
+      size: finalSize,
+      status,
+      updatedAt: new Date(),
+    },
+    ['filename'],
+  );
 
-            await new Promise<void>((resolve, reject) => {
-                req.on('data', chunk => {
-                    if (written < allowedSize) {
-                        const toWrite = chunk.slice(0, allowedSize - written);
-                        writeStream.write(toWrite);
-                        written += toWrite.length;
-                    }
-                });
-                req.on('end', () => {
-                    writeStream.end();
-                    resolve();
-                });
-                req.on('error', reject);
-                writeStream.on('error', reject);
-            });
-        } else {
-            const stream = createWriteStream(uploadPath, { flags: 'a' });
-            await new Promise<void>((resolve, reject) => {
-                req.pipe(stream);
-                stream.on('finish', resolve);
-                stream.on('error', reject);
-                req.on('error', reject);
-            });
-        }
+  return {
+    uploaded: finalSize,
+    status,
+  };
+}
 
-        const finalStats = await fsPromises.stat(uploadPath);
-        const finalSize = finalStats.size;
-
-        let status = 'in-progress';
-        if (finalSize >= totalSize) {
-            status = 'complete';
-        }
-
-        await this.uploadRepo.upsert(
-            {
-                filename: fileName,
-                size: finalSize,
-                status,
-                updatedAt: new Date(),
-            },
-            ['filename'],
-        );
-
-        return {
-            uploaded: finalSize,
-            status,
-        };
-    }
 
     async abortUpload(filename: string): Promise<boolean> {
         const record = await this.uploadRepo.findOneBy({ filename });
@@ -129,11 +143,35 @@ export class UploadService {
         return true;
     }
 
-
-    async getStatus(filename: string) {
-        const record = await this.uploadRepo.findOneBy({ filename });
-        return record || { filename, size: 0, status: 'not-started' };
+async getStatus(filename: string) {
+    const filePath = path.join(process.cwd(), 'uploads', filename);
+    let actualSize = 0;
+    try {
+        const stats = await fsPromises.stat(filePath);
+        actualSize = stats.size;
+    } catch {
+        actualSize = 0;
     }
+
+    let record = await this.uploadRepo.findOneBy({ filename });
+
+    if (record) {
+        if (record.size !== actualSize) {
+            // Update biar sinkron
+            record.size = actualSize;
+            record.updatedAt = new Date();
+            await this.uploadRepo.save(record);
+        }
+        return record;
+    } else {
+        return {
+            filename,
+            size: actualSize,
+            status: actualSize > 0 ? 'in-progress' : 'not-started',
+        };
+    }
+}
+
 
     // async computeChecksums(filePath: string): Promise<[string, string]> {
     //     return new Promise((resolve, reject) => {

@@ -7,61 +7,89 @@
 </head>
 <body>
   <h1>resumable file upload</h1>
-  <p>pake Nest + Vanilla Japasekrip</p>
+  <p>pake Nest + Vanilla JavaScript</p>
   <br/>
   <input type="file" id="fileInput" />
   <br/><br/>
   <progress id="progress" value="0" max="100"></progress>
   <div id="status"></div>
   <br/>
-  <button id="abortBtn" disabled>Abort Upload</button>
+  <button id="pauseBtn" disabled>Pause</button>
+  <button id="resumeBtn" disabled>Resume</button>
+  <button id="abortBtn" disabled>Abort</button>
 
 <script>
 const fileInput = document.getElementById("fileInput");
 const progress = document.getElementById("progress");
 const status = document.getElementById("status");
+const pauseBtn = document.getElementById("pauseBtn");
+const resumeBtn = document.getElementById("resumeBtn");
 const abortBtn = document.getElementById("abortBtn");
+
 let file = null;
 let offset = 0;
 let isUploading = false;
+let isPaused = false;
 let currentXHR = null;
-const chunkSize = 128 * 1024; // 128KB 
+const chunkSize = 128 * 1024; // 128KB
 
 fileInput.addEventListener("change", async () => {
   file = fileInput.files[0];
   offset = 0;
+  progress.value = 0;
+  pauseBtn.disabled = false;
   abortBtn.disabled = false;
+  resumeBtn.disabled = true;
   await startUpload();
 });
 
-abortBtn.addEventListener("click", async () => {
-  if (currentXHR) {
-    currentXHR.abort();
-  }
+pauseBtn.addEventListener("click", () => {
+  if (currentXHR) currentXHR.abort();
+  isPaused = true;
   isUploading = false;
+  pauseBtn.disabled = true;
+  resumeBtn.disabled = false;
+  status.innerText = "Upload paused.";
+});
+
+resumeBtn.addEventListener("click", async () => {
+  if (file) {
+    isPaused = false;
+    isUploading = true;
+    pauseBtn.disabled = false;
+    resumeBtn.disabled = true;
+    status.innerText = "Resuming upload...";
+    await startUpload();
+  }
+});
+
+abortBtn.addEventListener("click", async () => {
+  if (currentXHR) currentXHR.abort();
+  isUploading = false;
+  isPaused = false;
+  pauseBtn.disabled = true;
+  resumeBtn.disabled = true;
   abortBtn.disabled = true;
   status.innerText = "Upload aborted. Cleaning up...";
 
   try {
-    const res = await fetch(`/upload?filename=${encodeURIComponent(file.name)}`, {
-      method: 'DELETE'
-    });
+    const res = await fetch(`/upload?filename=${encodeURIComponent(file.name)}`, { method: 'DELETE' });
     if (res.ok) {
       const data = await res.json();
       alert(data.message);
-      status.innerText = data.message;
+      resetUpload();
     } else {
-      alert(`Failed to abort: ${res.statusText}`);
+      status.innerText = `Failed to abort: ${res.statusText}`;
     }
   } catch (err) {
-    console.error('Abort error', err);
-    alert('Abort failed: ' + err.message);
+    console.error(err);
+    status.innerText = `Abort failed: ${err.message}`;
   }
 });
 
 window.addEventListener("online", () => {
-  status.innerText = "Connection restored. Resuming upload...";
-  if (!isUploading && file) startUpload();
+  status.innerText = "Connection restored.";
+  if (!isUploading && file && !isPaused) startUpload();
 });
 
 window.addEventListener("offline", () => {
@@ -71,14 +99,15 @@ window.addEventListener("offline", () => {
 async function startUpload() {
   isUploading = true;
 
-  const res = await fetch(`/status?filename=${encodeURIComponent(file.name)}`);
+  // Selalu sync offset dengan server
+  const res = await fetch(`/upload/status?filename=${encodeURIComponent(file.name)}`);
   if (res.ok) {
     const data = await res.json();
-    offset = data.size;
+    if (data.size > offset) offset = data.size;
   }
 
   while (offset < file.size) {
-    if (!navigator.onLine || !isUploading) {
+    if (!navigator.onLine || !isUploading || isPaused) {
       isUploading = false;
       return;
     }
@@ -89,7 +118,7 @@ async function startUpload() {
       offset = uploadedData.uploaded;
     } catch (err) {
       if (err.message === "abort") {
-        status.innerText = "Upload manually aborted.";
+        status.innerText = isPaused ? "Upload paused." : "Upload aborted.";
       } else {
         status.innerText = `Error: ${err.message}`;
       }
@@ -98,11 +127,12 @@ async function startUpload() {
     }
   }
 
-  status.innerText = "Upload complete!";
-  progress.value = 100;
-  abortBtn.disabled = true;
-  alert("Upload complete!");
-  isUploading = false;
+  if (offset >= file.size) {
+    status.innerText = "Upload complete!";
+    progress.value = 100;
+    resetUpload();
+    alert("Upload complete!");
+  }
 }
 
 function uploadChunkXHR(chunk, offset, file) {
@@ -116,20 +146,15 @@ function uploadChunkXHR(chunk, offset, file) {
 
     xhr.upload.onprogress = function(e) {
       if (e.lengthComputable) {
-        const totalUploaded = offset + e.loaded;
-        const percent = (totalUploaded / file.size) * 100;
+        const percent = ((offset + e.loaded) / file.size) * 100;
         progress.value = percent;
         status.innerText = `Uploading... ${percent.toFixed(2)}%`;
       }
     };
 
     xhr.onload = function() {
-      if (xhr.status >= 200 && xhr.status <= 300) {
-        try {
-          resolve(JSON.parse(xhr.responseText));
-        } catch (e) {
-          reject(new Error("Invalid JSON response"));
-        }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(JSON.parse(xhr.responseText));
       } else {
         reject(new Error(`Upload failed: ${xhr.status}`));
       }
@@ -146,7 +171,21 @@ function uploadChunkXHR(chunk, offset, file) {
     xhr.send(chunk);
   });
 }
+
+function resetUpload() {
+  pauseBtn.disabled = true;
+  resumeBtn.disabled = true;
+  abortBtn.disabled = true;
+  fileInput.value = "";
+  file = null;
+  offset = 0;
+  currentXHR = null;
+  isUploading = false;
+  isPaused = false;
+  progress.value = 0;
+}
 </script>
+
 
 </body>
 </html>

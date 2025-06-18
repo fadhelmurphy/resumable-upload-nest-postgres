@@ -5,12 +5,13 @@ import {
   Delete,
   Query,
   Req,
+  Res,
   Headers,
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
 import { UploadService } from './upload.service';
-import { Request } from 'express';
+import { Request, Response } from 'express';
 
 @Controller('upload')
 export class UploadController {
@@ -33,8 +34,9 @@ export class UploadController {
   @Post()
   async upload(
     @Req() req: Request,
-    @Headers('upload-file-name') fileName: string,
-    @Headers('upload-total-size') totalSize: string,
+    @Res() res: Response,
+    @Headers('Upload-File-Name') fileName: string,
+    @Headers('Upload-Total-Size') totalSize: string,
   ) {
     if (!fileName || !totalSize) {
       throw new HttpException('Missing headers', HttpStatus.BAD_REQUEST);
@@ -42,7 +44,12 @@ export class UploadController {
 
     const result = await  this.uploadService.handleUpload(req, fileName, +totalSize);
 
-    return result;
+      res.set({
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+    'Content-Length': Buffer.byteLength(JSON.stringify(result))
+  });
+  return res.json(result);
   }
 
   @Get('status')
